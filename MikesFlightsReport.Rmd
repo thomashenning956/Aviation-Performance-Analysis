@@ -1,0 +1,519 @@
+---
+title: |
+  | Comparing Current Take-Off Data of Cessna 177 RG 
+  | to Expected Results in 1976 Pilot's Operating Handbook
+author: "Mike Montgomery and Thomas Henning"
+date: "May-June 2026"
+output:
+  pdf_document:
+    highlight: haddock
+    keep_tex: yes
+    latex_engine: xelatex
+    number_sections: yes
+    toc: no # TABLE OF CONTENTS, SAY YES OR NO, IT WILL APPEAR ON TITLE PAGE
+header-includes:
+- \usepackage{booktabs}
+- \usepackage{longtable}
+- \usepackage{array}
+- \usepackage{multirow}
+- \usepackage{wrapfig}
+- \usepackage{float}
+- \usepackage{colortbl}
+- \usepackage{pdflscape}
+- \usepackage{tabu}
+- \usepackage{threeparttable}
+- \usepackage{threeparttablex}
+- \usepackage[normalem]{ulem}
+- \usepackage{makecell}
+- \usepackage{xcolor}
+geometry: margin = 0.5in
+editor_options:
+  chunk_output_type: console
+urlcolor: blue
+---
+
+
+
+
+```{r setup, include=FALSE}
+# This is the setup chunk
+#  Here you can set global options for the entire document
+
+library(knitr) # I recommend doing this
+
+# Although you can call functions from a library using the following notation
+#  without loading the entire library.
+knitr::opts_chunk$set(echo = TRUE, 
+                      comment = NA, # Recommended
+                      fig.path = "./figures/",  # Store all figures here in relative path
+                      fig.align = "center",
+                      fig.width = 7,
+                      fig.height = 7,
+                      message = FALSE, # Turn off load messages
+                      warning = FALSE # Turn off warnings,
+                      )
+
+
+
+
+```
+\clearpage
+
+\tableofcontents 
+
+\clearpage
+
+```{r include=FALSE}
+
+# You should set your working directory at the very beginning of your R Markdown file
+setwd("C:/Users/thoma/Desktop/DataBiz/MikesFlights")
+
+# You should load all of the libraries that you plan to use here unless you plan
+#  on using the notation library_name::function_name()
+
+library(tidyverse) 
+library(pander)  # We used pander here, but some alternative libraries are below:
+library(xtable)
+library(kableExtra)
+library(readxl) # for excel spreadsheets
+```
+
+
+# Introduction
+
+In this report, we will be looking at Mike Montgomery's personal flight logs and comparing them to what his Pilot's Operating Handbook (POH) predicts these measurements will be. The POH is a handbook provided by the aircraft manufacturer containing standardized performance predictions for a specific aircraft model under various conditions. For this study our aircraft is a *Cessna 177 RG*. While flying has a lot of variables, we are specifically looking at the distance in feet his aircraft rolled on the runway before it took off, and the total distance it took him from the start of rolling to being able to fly over a 50' obstacle. For those interested, citations to the illustrations and POH handbook are provided at the end of this report.
+
+This analysis uses 16 flight records collected by the pilot between January 2025 and May 2026. For each flight, the pilot recorded environmental conditions including temperature, pressure altitude, and gross weight, and manually calculated the expected ground roll and 50ft clearance distances using the POH performance tables. Actual ground roll and 50ft clearance distances were also recorded for each flight using a Garmin GNC 355 GPS (a navigation system widely used in general aviation), allowing for a direct comparison between predicted and actual performance. The table Montgomery filled out as well as the POH tables with definitions can be found starting in Section 8 of this report. 
+
+This first illustration shows the total distance from starting to roll to then clearing a 50' obstacle.^1^ The second shows the differences in "climbing" at different angles.^2^ As we can see, the angle at which a pilot climbs after lift-off makes a significant difference in how quickly they can clear a 50' obstacle.
+
+```{r, echo=FALSE, out.width="100%", out.height="25%", fig.cap="take-off sequence showing ground roll and climb out"}
+knitr::include_graphics("Picture2.png")
+```
+
+```{r, echo=FALSE, out.height="25%", out.width="100%", fig.cap="Climb angle (Vx) vs climb rate (Vy) tradeoff"}
+knitr::include_graphics("Picture1.png")
+```
+
+With these concepts in mind, we can now move into the statistical analysis. To assess whether the pilot's performance differed significantly from POH predictions, we ran paired t-tests comparing computed and actual distances for both ground roll and 50ft clearance. We then used a series of visualizations: scatterplots, histograms, Bland-Altman plots, and time series plots, to further explore the nature and consistency of any differences found. 
+
+This analysis was conducted using $R$, a free, well known programming language for statistical reports.
+
+```{r, echo = FALSE}
+# Reading in both datasets
+
+## First Dataset
+flightData <- read_excel("AircraftPerformanceDataForThomas.xlsx",
+                         sheet = "Flight Data (3)",
+                         skip = 1) %>%
+  rename(Date = `...1`, Acft = `...2`) %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(Acft == "RG") %>%
+  rename(`50'% Delta` = `% Delta...21`)
+
+## Second Dataset
+pohData <- read_excel("AircraftPerformanceDataForThomas.xlsx", 
+                      sheet = "Takeoff Performance Data",
+                      skip = 2,
+                      col_names = c(
+                        "weight_lbs", "liftoff_kias", "at_50ft_kias", "press_alt",
+                        "roll_0c",  "50_0c",
+                        "roll_10c", "50_10c",
+                        "roll_20c", "50_20c",
+                        "roll_30c", "50_30c",
+                        "roll_40c", "50_40c"
+                      )) %>%
+  fill(weight_lbs, liftoff_kias, at_50ft_kias, press_alt) %>%
+  filter(!is.na(weight_lbs))
+
+## Turning deltas into percentages for readability
+flightData <- flightData %>%
+  mutate(
+    `% Delta...19` = `% Delta...19` * 100,
+    `50'% Delta`   = `50'% Delta`   * 100
+  )
+
+```
+
+\clearpage
+
+# Paired t-test
+
+In statistics, *paired t-tests* are used to compare two measurements from the same subject to see if the average difference between them is significant. The main output we get from a t-test is a *p-value*. 
+
+P-values tell us how likely we would be to observe the difference we see in our values if there was truly no difference between what we're comparing. So a high p-value tells us we're very likely to see these numbers if we assume what we're comparing is equal to each other, and a low value would tell us we're *not* likely to see this difference if we assume the two groups are equal to each other. 
+
+Typically in statistics if a p-value is less than 0.05, or 5%, we determine the differences in our averages are significant and our two groups are *not* aligned with each other.^3^ If our p-value is equal to or above 0.05, we say we don't have enough evidence to prove the two groups are different. In this case, we're asking "Are this pilot's performances different than what is predicted for him?" and our p-value will help us determine either yes (p-value of below 0.05) or no (p-value of 0.05 or greater). It's also worth noting we're not technically proving if he "is" flying within the measurements, we're only saying we can't prove he isn't. In statistics we'd say our *null hypothesis* is, "our pilot's performances are not different from what the POH predicts," and we will either *reject* or *fail to reject* that hypothesis.
+
+
+Knowing that, let's run two separate t-tests: one comparing the rolling distances and another comparing the distances until the plane can clear a 50' obstacle. The tables we'll be referencing are found in Section 8 of this report.
+
+Please note: The following results for this test have output from my coding. The definitions for *flightData, TO Roll, TO Dist, 50' Dist* and *50' Obs* can be found in Section 8 for those curious. For those strictly interested in the results, however, we'll only look at the *p-value* and *mean difference* values.
+
+## T-test for Rolling Distance
+
+
+```{r, echo = FALSE}
+# Ground roll t-test
+t.test(flightData$`TO Roll`, flightData$`TO Dist`, paired = TRUE)
+```
+
+Here we look at our p-value of 0.2342, or 23.42%. This is greater than our 5% standard, so we  can conclude we don't have enough evidence to say the pilot is performing differently than predicted. Simply put, he's performing as predicted. We can also see the mean difference at the bottom of the report is -37.81, this means on average the pilot's actual ground roll is 37.81 feet shorter than predicted. Not too bad! Now let's look at the distance to clear 50' obstacles.
+
+## T-test for Distance to Clear 50'
+```{r, echo=FALSE}
+# 50ft distance t-test
+t.test(flightData$`50' Dist`, flightData$`50' Obs`, paired = TRUE)
+```
+
+Here our p-value is 0.0008757, or 0.09%. This is extremely low, much lower than our 5% standard. Simply, this is saying the odds of us seeing this difference in our means if our computed and actual results were aligned is 0.09%, basically zero! So something is misaligned here. This means we have more than enough evidence to conclude the pilot is not performing in accordance to his predicted outcomes. Looking at our mean difference at the bottom of the output, we see 343.875. This means the pilot is on average reaching the altitude to clear a 50' obstacle about 343.88 feet *after* he is predicted to. 
+
+\clearpage
+
+# Plots for Distances
+
+Here we will be seeing how take-off data differed from what was predicted. The closer a point is to the red line, the closer it was to being the same as what was predicted. This will help us see if there are any trends in how we deviate from what is predicted, if at all. We'll also have a blue line shaped from our observations to clearly see any trend they have, which we can compare to the red line. 
+
+
+## Ground Roll
+```{r, echo = FALSE, fig.cap="Actual vs Computed Ground Roll Distance"}
+# Ground Roll Scatterplot
+ggplot(flightData, aes(x = `TO Dist`, y = `TO Roll`)) +
+  geom_point() +
+  geom_abline(aes(slope = 1, intercept = 0, color = "Perfect Alignment"), linetype = "solid") +
+  geom_smooth(aes(color = "Actual Alignment"), method = "lm", se = FALSE) +
+  scale_color_manual(name = "", values = c("Perfect Alignment" = "red", "Actual Alignment" = "blue")) +
+  labs(title = "Actual vs Computed Ground Roll",
+       x = "Computed Ground Roll (ft)",
+       y = "Actual Ground Roll (ft)") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = c(0.85, 0.35))
+```
+
+This first graph is pretty typical, we see points on either side of the line, some closer than others, with a few outliers here and there. We can also see two flights at the bottom of the graph (about 750' computed, about 450' actual) where it seems the pilot took off significantly earlier than predicted. 
+
+Our blue line is the average line our actual points roughly follow, and we can see it starts similar to our predicted, and as computed distances increase, the pilot's actual ground roll tends to fall slightly below the predicted.
+
+## 50' Distance
+```{r,echo=FALSE, fig.cap="Actual vs Computed 50ft Clearance Distance"}
+# 50ft Distance Scatterplot
+ggplot(flightData, aes(x = `50' Obs`, y = `50' Dist`)) +
+  geom_point() +
+  geom_abline(aes(slope = 1, intercept = 0, color = "Perfect Alignment"), linetype = "solid") +
+  geom_smooth(aes(color = "Actual Alignment"), method = "lm", se = FALSE) +
+  scale_color_manual(name = "", values = c("Perfect Alignment" = "red", "Actual Alignment" = "blue")) +
+  labs(title = "Actual vs Computed 50ft Clearance Distance",
+       x = "Computed 50ft Distance (ft)",
+       y = "Actual 50ft Distance (ft)") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = c(0.85, 0.35))
+```
+
+For this graph we can see right away almost all our points are above the red line, and not too many are near it. Our blue line shows the pilot averaged a little less than 1750' on each take-off. This is where statistics can be misleading. We see the pilot doesn't actually have that many clearance distances at the 1750' mark, however he does have a lot above, near the 2000' range, and below scattered down. However, even though our "average" can be misleading, the main takeaway from this is our blue line is drastically different from our red one. In addition to this, the blue line doesn't have that much of a slope, meaning the pilot's performance stays almost the same regardless of what the POH predicts. The right-most point on the graph is an outlier, clearly examined in section 7.2. 
+
+Looking at both plots together, we see something interesting. Although the pilot stayed pretty aligned with the POH during the Ground Roll, the distance to make it to 50' was almost consistently off by hundreds of feet. This could mean the 50' performance may be driven by something else the POH may not account for, such as engine/aircraft performance or angle of climb, as opposed to the environmental conditions like weight and temperature.
+
+
+\clearpage
+
+# Observing Deltas
+
+Here we're going to organize the *deltas* (differences between actual and predicted distances) to get a better visual of how the pilot is operating. We will group the deltas with certain distances, then count the amount in each group. We'll also see a red line to better mark our predicted value, and a blue line to mark the average of our our observations.
+
+For the Ground Roll deltas we'll have groups of 50 feet and for our 50' Obstacle deltas we'll have groups of 100 feet. The closer our deltas are to zero (0), the closer it is to our predicted value.
+
+## Ground Roll
+
+```{r, echo = FALSE}
+# Ground Roll Error Histogram
+ggplot(flightData, aes(x = `TO Roll Delta`)) +
+  geom_histogram(binwidth = 50, fill = "steelblue", color = "black") +
+  geom_vline(aes(xintercept = 0, color = "Zero"), linetype = "solid") +
+  geom_vline(aes(xintercept = mean(`TO Roll Delta`, na.rm = TRUE), color = "Average"), linetype = "solid") +
+  scale_color_manual(name = "", values = c("Zero" = "red", "Average" = "blue")) +
+  labs(title = "Distribution of Ground Roll Errors",
+       x = "Error (Actual - Computed)",
+       y = "Count") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        plot.title = element_text(hjust = 0.5),
+      legend.position = c(0.15, 0.85))
+```
+
+Here we can see the pilot has the majority of his flights right in line (pun intended) with what's predicted for him. We see some of the outliers we pointed out before on the left side, where the pilot lifted off earlier than predicted. Most flights cluster near zero with a few outliers pulling the average to the left. 
+
+## 50' Obstacle
+
+```{r, echo = FALSE}
+# 50ft Distance Error Histogram
+ggplot(flightData, aes(x = `50' Delta`)) +
+  geom_histogram(binwidth = 100, fill = "steelblue", color = "black") +
+  geom_vline(aes(xintercept = 0, color = "Zero"), linetype = "solid") +
+  geom_vline(aes(xintercept = mean(`50' Delta`, na.rm = TRUE), color = "Average"), linetype = "solid") +
+  scale_color_manual(name = "", values = c("Zero" = "red", "Average" = "blue")) +
+  labs(title = "Distribution of 50ft Clearance Errors",
+       x = "Error (Actual - Computed)",
+       y = "Count") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        plot.title = element_text(hjust = 0.5),
+      legend.position = c(0.15, 0.85))
+```
+
+Here we can see how frequently the pilot took extra distance to clear a 50' obstacle. We see most of our differences are from 600 to 800 feet! That's pretty substantial. Although we have some pile up towards the end, we see there's no gaps on the right side of the graph, meaning the amount of overrun varies quite a bit flight to flight. We also see our average is much higher than our predicted, which confirms what we saw earlier.
+
+
+\clearpage
+
+# Bland-Altman
+
+Next we're going to use a *Bland-Altman* graph. This graph will have the *average* of the predicted and actual of each flight on the x-axis, and the *difference* between the two on the y-axis. This is to show us if there's any correlation between the differences shown. The blue line we'll see is the average between the flights, and the red lines are where we'd predict 95% of differences (or *two standard deviations*, for appropriate statistician lingo) to fall. This is important when determining if a flight is especially noteworthy. 
+
+## Ground Roll
+
+```{r, echo=FALSE}
+# Bland-Altman for Ground Roll
+flightData <- flightData %>%
+  mutate(
+    ba_roll_avg  = (`TO Roll` + `TO Dist`) / 2,
+    ba_roll_diff = `TO Roll` - `TO Dist`,
+    ba_50_avg    = (`50' Dist` + `50' Obs`) / 2,
+    ba_50_diff   = `50' Dist` - `50' Obs`
+  )
+
+# Ground Roll Bland-Altman Plot
+ggplot(flightData, aes(x = ba_roll_avg, y = ba_roll_diff)) +
+  geom_point() +
+  geom_hline(aes(yintercept = mean(ba_roll_diff, na.rm = TRUE), color = "Mean"), linetype = "solid") +
+  geom_hline(aes(yintercept = mean(ba_roll_diff, na.rm = TRUE) + 1.96 * sd(ba_roll_diff, na.rm = TRUE), color = "95% Limits"), linetype = "solid") +
+  geom_hline(aes(yintercept = mean(ba_roll_diff, na.rm = TRUE) - 1.96 * sd(ba_roll_diff, na.rm = TRUE), color = "95% Limits"), linetype = "solid") +
+  scale_color_manual(name = "", values = c("Mean" = "blue", "95% Limits" = "red")) +
+  labs(title = "Bland-Altman Plot: Ground Roll",
+       x = "Average of Actual and Computed (ft)",
+       y = "Difference (Actual - Computed)") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = c(0.15, 0.85))
+```
+
+For the ground roll, we see most of the flights are clustered near the blue line with the majority falling into a reasonable range. We also see on the bottom left we have *two* flights outside our red lines. This means these two flights are outliers, and are also the main reason our average is being brought down. Our range of the flights is about -300' to +200', around 500' of variation between all the flights. There's also no obvious trend or pattern between the points, so we can see the difference between the computed and actual stays almost equal throughout different take-off distances. 
+
+## 50' Obstacle
+```{r, echo=FALSE}
+# 50ft Bland-Altman Plot
+ggplot(flightData, aes(x = ba_50_avg, y = ba_50_diff)) +
+  geom_point() +
+  geom_hline(aes(yintercept = mean(ba_50_diff, na.rm = TRUE), color = "Mean"), linetype = "solid") +
+  geom_hline(aes(yintercept = mean(ba_50_diff, na.rm = TRUE) + 1.96 * sd(ba_50_diff, na.rm = TRUE), color = "95% Limits"), linetype = "solid") +
+  geom_hline(aes(yintercept = mean(ba_50_diff, na.rm = TRUE) - 1.96 * sd(ba_50_diff, na.rm = TRUE), color = "95% Limits"), linetype = "solid") +
+  scale_color_manual(name = "", values = c("Mean" = "blue", "95% Limits" = "red")) +
+  labs(title = "Bland-Altman Plot: 50ft Clearance Distance",
+       x = "Average of Actual and Computed (ft)",
+       y = "Difference (Actual - Computed)") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = c(0.15, 0.85))
+```
+
+Here we can see again our average distance is much higher than our zero (0) on the y-axis. We should take note of how wide our 95% Limits are for this, it's about -250' to +1,000', a 1,250' range for our flights. This is massively different from our Ground Roll distances, and these points are better spread with fewer outliers, meaning there's a lot of variation in how the pilot performs. We also see the points start to get higher as they move closer to the right, which suggests the differences between computed and actual increases as the take-off distance increases. This wide range also reinforces our earlier *t-test* finding that the overrun for clearing a 50' obstacle is significant and somewhat unpredictable from flight to flight.  
+
+\clearpage
+
+# Deltas Over Time
+
+Our last plots will be looking at the deltas as they happened over time. This will help us see if there's any trends in our deltas as time goes on, such as an engine wearing out, fluids needing to be changed, batteries needing to be recharged, or any other aircraft maintenance.
+
+## Ground Roll
+
+```{r, echo=FALSE}
+# Ground Roll Delta Over Time
+ggplot(flightData, aes(x = Date, y = `TO Roll Delta`)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(aes(yintercept = 0, color = "Zero"), linetype = "solid") +
+  geom_hline(aes(yintercept = mean(`TO Roll Delta`, na.rm = TRUE), color = "Average"), linetype = "solid") +
+  scale_color_manual(name = "", values = c("Zero" = "red", "Average" = "blue")) +
+  labs(title = "Ground Roll Delta Over Time",
+       x = "Date",
+       y = "Delta (Actual - Computed)") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = c(0.15, 0.15))
+```
+
+Here we see no clear trend between the points. We keep seeing the same points that have been standing out to us, with the rest staying pretty near the center. There's no strong evidence for any gradual degradation in performance.
+
+## 50' Obstacle
+```{r, echo=FALSE}
+# 50ft Delta Over Time
+ggplot(flightData, aes(x = Date, y = `50' Delta`)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(aes(yintercept = 0, color = "Zero"), linetype = "solid") +
+  geom_hline(aes(yintercept = mean(`50' Delta`, na.rm = TRUE), color = "Average"), linetype = "solid") +
+  scale_color_manual(name = "", values = c("Zero" = "red", "Average" = "blue")) +
+  labs(title = "50ft Clearance Delta Over Time",
+       x = "Date",
+       y = "Delta (Actual - Computed)") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = c(0.15, 0.15))
+```
+
+Here there is also no clear trend, but we can see how much variation is in each flight. Our deltas swing back and forth from -250' to +750' with no consistent pattern. We see a big drop around July (2025-07), which matches with our previous plot's Ground Roll dip, telling us this specific flight was unusual and outperformed predictions in both ground roll and 50' clearance. What's most important about this is we can see there's no trend saying our deltas changed over time. This can reassure us nothing is getting progressively worse, the distance required to clear a 50' obstacle just varies from flight to flight. 
+
+\clearpage
+
+# Conclusion
+
+This study was performed to determine whether this particular pilot's take-off performance was aligned with the POH predictions. 
+
+In our Ground Roll numbers we saw no significant differences and can conclude the pilot does perform as predicted. For our 50' Obstacle numbers we had highly significant findings, determining the pilot consistently requires more distance than predicted, averaging about 343' more.
+
+Since the ground roll is on target but the 50' clearance distance is not, the issue appears to be in the climb phase after lift-off. As illustrated in the introduction, the angle at which a pilot climbs after lift-off makes a significant difference in how quickly they can clear a 50' obstacle. This suggests the pilot's climb angle after lift-off may be worth reviewing, especially since the angle of lift-off is never computed or recorded.
+
+There are no trends over time to let us know if these inconsistencies are getting worse or better, though further investigation into the climb performance may be worthwhile. Particularly recording what angles the aircraft takes off at and comparing them to the angles needed to reach the ideal, computed numbers for take-off. 
+
+Only having 16 flights and some incomplete records, this study could benefit from having more flight records to draw from to investigate the difference in clearing a 50' obstacle more in depth, particularly to investigate if it could be related to engine performance, climb technique, environmental conditions, etc.
+
+Thank you for reading!
+
+
+\clearpage
+# Tables Used
+
+## Data Dictionaries
+
+```{r, echo=FALSE}
+ddMikeFlight <- data.frame(
+  Variable = c("Date", "Temp", "Press Alt", "Den Alt", "GW", 
+               "TO Dist", "50' Obs", "TO Roll", "50' Dist", 
+               "TO Roll Delta", "50' Delta"),
+  Description = c(
+    "Date of flight",
+    "Outside air temperature in Celsius",
+    "Pressure altitude, altitude in feet adjusted for atmospheric pressure",
+    "Density altitude, how high in feet the aircraft performs like it's at, accounting for temperature effects on air density",
+    "Gross weight of the aircraft including pilot, passengers, and fuel",
+    "POH computed ground roll distance in feet before aircraft takes flight",
+    "POH computed total distance to clear a 50ft obstacle in feet",
+    "Actual recorded ground roll distance in feet before aircraft takes flight",
+    "Actual recorded total distance to clear a 50ft obstacle in feet",
+    "Difference between actual and computed ground roll (Actual - Computed)",
+    "Difference between actual and computed 50ft clearance distance (Actual - Computed)"
+  )
+)
+
+kable(ddMikeFlight, format = "latex", booktabs = TRUE,
+      caption = "Flight Data Dictionary") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down")) %>%
+  column_spec(1, bold = TRUE)
+```
+
+```{r, echo=FALSE}
+ddPOH <- data.frame(
+  Variable = c("Weight (lbs)", "lift-off Speed (KIAS)", "Speed at 50ft (KIAS)", 
+               "Pressure Alt (ft)", "Ground Roll (ft)", "Total to Clear 50ft (ft)"),
+  Description = c(
+    "Gross weight of the aircraft in pounds, table provides values for 2400, 2600, and 2800 lbs",
+    "Indicated airspeed in knots at which the aircraft lifts off the runway",
+    "Indicated airspeed in knots at which the aircraft passes the 50ft obstacle",
+    "Pressure altitude in feet, ranges from sea level to 8000ft in the table",
+    "POH predicted ground roll distance in feet for a given weight, altitude, and temperature",
+    "POH predicted total distance in feet to clear a 50ft obstacle"
+  )
+)
+
+kable(ddPOH, format = "latex", booktabs = TRUE,
+      caption = "POH Table Data Dictionary") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down")) %>%
+  column_spec(1, bold = TRUE)
+```
+
+
+## Flight Records
+
+```{r, echo=FALSE, out.width="100%"}
+flightData %>%
+  select(Date, Temp, `Press Alt`, `Den Alt`, GW, 
+         `TO Dist`, `50' Obs`, `TO Roll`, `50' Dist`,
+         `TO Roll Delta`, `50' Delta`) %>%
+  kable(caption = "Flight Data Records", booktabs = TRUE) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+
+
+\clearpage
+## POH References
+
+```{r, echo=FALSE, out.width="100%"}
+knitr::include_graphics(c("TOD1.pdf",
+                        "TOD2.pdf"))
+```
+
+
+
+\clearpage
+# Citations
+**Figure 1 (take-off Sequence Diagram):** Federal Aviation Administration. (2021). *Airplane Flying Handbook* 
+(FAA-H-8083-3C), Chapter 6: take-offs and Departure Climbs. 
+U.S. Department of Transportation. 
+
+https://www.faa.gov/regulations_policies/handbooks_manuals/aviation/airplane_handbook
+
+**Figure 2 (Vx vs Vy Diagram):** Pilot's Path. (2018). *Best angle vs best rate of climb* 
+[Video]. YouTube. 
+
+https://www.youtube.com/watch?v=EgtjSPXjgWQ
+
+**P-Value Significance Levels:** Cowles, M., & Davis, C. (1982). *On the origins of the .05 level of statistical significance.* 
+American Psychologist, 37(5), 553–358. 
+
+https://www.researchgate.net/publication/232560141_On_the_origins_of_the_05_level_of_statistical_significance
+
+**POH Performance Tables:** Cessna Aircraft Company. (1976). *Pilot's Operating Handbook: 
+Cessna Model 177RG Cardinal RG*, Section 5: Performance. 
+Cessna Aircraft Company.
+
+https://rafc.net.au/wp-content/uploads/2019/05/177rg_poh_1976_e.pdf
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
